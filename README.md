@@ -1,0 +1,2 @@
+# galgen
+Galaxy generative models
