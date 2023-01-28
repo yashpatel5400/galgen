@@ -16,7 +16,7 @@ import zipfile
 class MyDataset(Dataset):
     def __init__(self, path, split, transform = None):
         imgs = []
-        path = '/home/liyuhang/vae-galaxy/images_training_rev1'   #file root
+        #path = '/home/liyuhang/vae-galaxy/images_training_rev1'   #file root
         self.transform = transform
         for file in os.listdir(path):
             file_path = os.path.join(path, file)
