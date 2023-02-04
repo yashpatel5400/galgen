@@ -745,7 +745,7 @@ class GaussianDiffusion(nn.Module):
         loss = reduce(loss, 'b ... -> b (...)', 'mean')
 
         loss = loss * extract(self.p2_loss_weight, t, loss.shape)
-        return loss.mean(), model_out, x_start
+        return loss.mean(), self.unnormalize(model_out)
 
     def forward(self, img, *args, **kwargs):
         b, c, h, w, device, img_size, = *img.shape, img.device, self.image_size
@@ -910,7 +910,9 @@ class Trainer(object):
                     data = next(self.dl).to(device)
 
                     with self.accelerator.autocast():
-                        loss, model_out, target = self.model(data)
+                        loss, model_out = self.model(data)
+                        with torch.no_grad():
+                            target = data
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
