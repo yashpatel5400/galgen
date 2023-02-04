@@ -10,12 +10,12 @@ diffusion = GaussianDiffusion(
     image_size = 192,
     timesteps = 1000,           # number of steps
     sampling_timesteps = 250,   # number of sampling timesteps (using ddim for faster inference [see citation for ddim paper])
-    loss_type = 'l1'            # L1 or L2
+    loss_type = 'l2'            # L1 or L2
 ).cuda()
 
 trainer = Trainer(
     diffusion,
-    '/home/liyuhang/dataset/training/images_training_rev1',
+    '/home/aidanxue/dataset/images_training_rev1/images_training_rev1',
     train_batch_size = 16,
     train_lr = 1e-5,
     train_num_steps = 70000,         # total training steps
