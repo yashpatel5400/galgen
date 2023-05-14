@@ -305,7 +305,7 @@ class DDPM(nn.Module):
         # print("1c_i", c.shape)
         # print("1x_cond", x_cond.shape)
         # print("mask", context_mask.shape)
-        return self.loss_mse(noise, self.nn_model(torch.cat([x_cond, x], dim=1), c, _ts / self.n_T, context_mask))
+        return self.loss_mse(noise, self.nn_model(torch.cat([x_cond, x_t], dim=1), c, _ts / self.n_T, context_mask))
 
     def random_psf(self):
         variance = random.uniform(0.5,4)
@@ -362,7 +362,7 @@ class DDPM(nn.Module):
 
 def train_mnist():
     # hardcoding these here
-    n_epoch = 30
+    n_epoch = 300
     batch_size = 16
     n_T = 400  # 500
     device = "cuda:0"
@@ -389,9 +389,9 @@ def train_mnist():
         ]
     )
 
-    dataset = MyDataset(image_path="/home/aidanxue/psf/gen_illu",raw_image_path="/home/aidanxue/dataset/Illustris_128",psf_path="/home/aidanxue/psf/kernel",transform=tf)
+    dataset = MyDataset(image_path="/home/aidanxue/psf/0508_gen_illu",raw_image_path="/home/aidanxue/dataset/Illustris_128",psf_path="/home/aidanxue/psf/kernel",transform=tf)
     # dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=5)
-    train_size = int(0.85 * len(dataset))
+    train_size = int(0.5 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=5)
