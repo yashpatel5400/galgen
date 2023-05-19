@@ -58,7 +58,7 @@ class MyDataset(Dataset):
             img = self.transform(img)
             raw_img = self.transform(raw_img)
 
-        return img, raw_img, torch.from_numpy(psf).float()
+        return raw_img, img, torch.from_numpy(psf).float(), label
 
 class ResidualConvBlock(nn.Module):
     def __init__(
@@ -362,14 +362,14 @@ class DDPM(nn.Module):
 
 def train_mnist():
     # hardcoding these here
-    n_epoch = 300
-    batch_size = 16
-    n_T = 400  # 500
+    n_epoch = 500
+    batch_size = 96
+    n_T = 1000  # 500
     device = "cuda:0"
     n_conditions = 1
     n_feat = 128  # 128 ok, 256 better (but slower)
     lrate = 1e-4
-    save_model = False
+    save_model = True
     save_dir = './output/'
     ws_test = [0.0]  # strength of generative guidance
 
@@ -388,12 +388,9 @@ def train_mnist():
             transforms.ToTensor(),
         ]
     )
-
-    dataset = MyDataset(image_path="/home/aidanxue/psf/0508_gen_illu",raw_image_path="/home/aidanxue/dataset/Illustris_128",psf_path="/home/aidanxue/psf/kernel",transform=tf)
+    train_dataset = MyDataset(image_path="/home/aidanxue/SR/Illustris_0.5_to_1.75/train",raw_image_path="/home/aidanxue/SR/Illustris_128",psf_path="/home/aidanxue/SR/kernel",transform=tf)
+    val_dataset = MyDataset(image_path="/home/aidanxue/SR/Illustris_0.5_to_1.75/evaluate",raw_image_path="/home/aidanxue/SR/Illustris_128",psf_path="/home/aidanxue/SR/kernel",transform=tf)
     # dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=5)
-    train_size = int(0.5 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=5)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True)
     optim = torch.optim.Adam(ddpm.parameters(), lr=lrate)
@@ -408,7 +405,7 @@ def train_mnist():
         pbar = tqdm(train_loader)
         loss_ema = None
         # TODO:
-        for x, x_c, c in pbar:
+        for x, x_c, c, lable in pbar:
             optim.zero_grad()
             x = x.to(device)
             x_c = x_c.to(device)
@@ -430,20 +427,18 @@ def train_mnist():
                 n_sample = 2*n_conditions
                 for w_i, w in enumerate(ws_test):
                     data_iter = iter(val_loader)
-                    cond_img, raw_image, psf = next(data_iter)
+                    raw_image, cond_img, psf, sig = next(data_iter)
                     x_gen, x_gen_store = ddpm.sample(n_sample, (3,128,128), device, x_cond=cond_img,psf=psf, guide_w=w)
                     # TODO
-                    # c_store = 
                     grid = make_grid(x_gen, nrow=10)
-                    # c_store = str(round(c_store,2))
-                    c_store = 'x'
+                    c_store = str(round(float(sig[0]), 2))
                     save_image(grid, save_dir + f"SR_image_ep{ep}_w{w}_{c_store}.png".format())
-                    save_image(cond_img, save_dir + f"cond_img_ep{ep}_w{w}.png")
+                    save_image(cond_img, save_dir + f"cond_img_ep{ep}_w{w}_{c_store}.png")
                     save_image(raw_image, save_dir + f"raw_img_ep{ep}_w{w}.png")
                     print('saved image at ' + save_dir + f"image_ep{ep}_w{w}_{c_store}.png")
 
         # optionally save model
-        if save_model and ep == int(n_epoch - 1):
+        if save_model and (ep+1) % 50 == 0:
             torch.save(ddpm.state_dict(), save_dir + f"model_{ep}.pth")
             print('saved model at ' + save_dir + f"model_{ep}.pth")
 
