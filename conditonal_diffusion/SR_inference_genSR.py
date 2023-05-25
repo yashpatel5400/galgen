@@ -1,5 +1,3 @@
-import sys
-sys.path.append('/home/aidanxue/galgen/conditonal_diffusion')
 from SR_psf_conditioned_diffusion import DDPM, ContextUnet, MyDataset
 import random
 from tqdm import tqdm

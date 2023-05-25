@@ -18,12 +18,14 @@ from torch.utils.data import Dataset
 import cv2
 
 class MyDataset(Dataset):
-    def __init__(self, image_path,psf_path, transform=None):
+    def __init__(self, image_path, raw_image_path, psf_path, transform=None):
         self.image_path = image_path
+        self.raw_image_path = raw_image_path
         self.psf_path = psf_path
         self.transform = transform
         self.images = []
         self.labels = []
+        self.raw_images = []
         self.psfs = {}
 
         for filename in os.listdir(self.image_path):
@@ -31,6 +33,8 @@ class MyDataset(Dataset):
                 # name as "rotated_{}_{id}_{mass}_{position}.png"
                 self.images.append(os.path.join(self.image_path, filename))
                 label = filename.split("_")[0]
+                index = filename.split("_")[1]
+                self.raw_images.append(index)
                 self.labels.append(label)
                 if label not in self.psfs:
                     npy_file = "{}_gaussian_kernel_2d.npy".format(label)
@@ -45,13 +49,16 @@ class MyDataset(Dataset):
     def __getitem__(self, idx):
         img_path = self.images[idx]
         img = Image.open(img_path).convert('RGB')
+        raw_img_path = os.path.join(self.raw_image_path, self.raw_images[idx])
+        raw_img = Image.open(raw_img_path).convert('RGB')
         label = self.labels[idx]
         psf = self.psfs[label]
 
         if self.transform:
             img = self.transform(img)
+            raw_img = self.transform(raw_img)
 
-        return img, torch.from_numpy(psf).float()
+        return raw_img, img, torch.from_numpy(psf).float(), label
 
 class ResidualConvBlock(nn.Module):
     def __init__(
@@ -192,7 +199,7 @@ class ContextUnet(nn.Module):
             nn.Conv2d(2 * n_feat, n_feat, 3, 1, 1),
             nn.GroupNorm(8, n_feat),
             nn.ReLU(),
-            nn.Conv2d(n_feat, self.in_channels, 3, 1, 1),
+            nn.Conv2d(n_feat, 3, 3, 1, 1),
         )
 
     def forward(self, x, c, t, context_mask):
@@ -275,7 +282,7 @@ class DDPM(nn.Module):
         self.drop_prob = drop_prob
         self.loss_mse = nn.MSELoss()
 
-    def forward(self, x, c):
+    def forward(self, x, x_cond, c):
         """
         this method is used in training, so samples t and noise randomly
         """
@@ -293,7 +300,12 @@ class DDPM(nn.Module):
         context_mask = torch.bernoulli(torch.zeros(c.shape[0]) + self.drop_prob).view(-1,1,1).to(self.device)
 
         # return MSE between added noise, and our predicted noise
-        return self.loss_mse(noise, self.nn_model(x_t, c, _ts / self.n_T, context_mask))
+        # TODO: 
+        # print("1x_i", x.shape)
+        # print("1c_i", c.shape)
+        # print("1x_cond", x_cond.shape)
+        # print("mask", context_mask.shape)
+        return self.loss_mse(noise, self.nn_model(torch.cat([x_cond, x_t], dim=1), c, _ts / self.n_T, context_mask))
 
     def random_psf(self):
         variance = random.uniform(0.5,4)
@@ -301,7 +313,7 @@ class DDPM(nn.Module):
         return np.outer(psf_1d,psf_1d), variance
 
 
-    def sample(self, n_sample, size, device, guide_w=0.0):
+    def sample(self, n_sample, size, device, x_cond, psf, guide_w=0.0):
         # we follow the guidance sampling scheme described in 'Classifier-Free Diffusion Guidance'
         # to make the fwd passes efficient, we concat two versions of the dataset,
         # one with context_mask=0 and the other context_mask=1
@@ -309,8 +321,8 @@ class DDPM(nn.Module):
         # where w>0 means more guidance
 
         x_i = torch.randn(n_sample, *size).to(device)  # x_T ~ N(0, 1), sample initial noise
-        c_i, c_i_store = self.random_psf()
-        c_i = torch.from_numpy(c_i).float().to(device)
+        x_cond = x_cond.repeat(2*n_sample,1,1,1).to(device)
+        c_i = psf.to(device)
 
         # double the batch
         c_i = c_i.repeat(2*n_sample,1,1)
@@ -320,9 +332,9 @@ class DDPM(nn.Module):
 
         x_i_store = []  # keep track of generated steps in case want to plot something
         print()
-        for i in range(self.n_T, 0, -1):
+        for i in range(1000, 0, -1):
             print(f'sampling timestep {i}', end='\r')
-            t_is = torch.tensor([i / self.n_T]).to(device)
+            t_is = torch.tensor([i / 1000]).to(device)
             t_is = t_is.repeat(n_sample, 1, 1, 1)
 
             # double batch
@@ -332,7 +344,7 @@ class DDPM(nn.Module):
             z = torch.randn(n_sample, *size).to(device) if i > 1 else 0
 
             # split predictions and compute weighting
-            eps = self.nn_model(x_i, c_i, t_is, context_mask)
+            eps = self.nn_model(torch.cat([x_cond, x_i], dim=1), c_i, t_is, context_mask)
             eps1 = eps[:n_sample]
             eps2 = eps[n_sample:]
             eps = (1 + guide_w) * eps1 - guide_w * eps2
@@ -345,24 +357,24 @@ class DDPM(nn.Module):
                 x_i_store.append(x_i.detach().cpu().numpy())
 
         x_i_store = np.array(x_i_store)
-        return x_i, x_i_store, c_i_store
+        return x_i, x_i_store
 
 
 def train_mnist():
     # hardcoding these here
-    n_epoch = 300
-    batch_size = 16
-    n_T = 400  # 500
+    n_epoch = 500
+    batch_size = 96
+    n_T = 1000 # 500  # 1000
     device = "cuda:0"
     n_conditions = 1
     n_feat = 128  # 128 ok, 256 better (but slower)
     lrate = 1e-4
-    save_model = False
+    save_model = True
     save_dir = './output/'
     ws_test = [0.0]  # strength of generative guidance
 
 
-    ddpm = DDPM(nn_model=ContextUnet(in_channels=3, n_feat=n_feat, n_conditions=n_conditions), betas=(1e-4, 0.02), n_T=n_T,
+    ddpm = DDPM(nn_model=ContextUnet(in_channels=6, n_feat=n_feat, n_conditions=n_conditions), betas=(1e-4, 0.02), n_T=n_T,
                 device=device, drop_prob=0.1)
     ddpm.to(device)
 
@@ -376,9 +388,10 @@ def train_mnist():
             transforms.ToTensor(),
         ]
     )
-
-    dataset = MyDataset(image_path="./dataset/gen_illu",psf_path="./dataset/kernel_npy",transform=tf)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=5)
+    train_dataset = MyDataset(image_path="/home/aidanxue/SR/Illustris_0.5_to_1.75/train",raw_image_path="/home/aidanxue/SR/Illustris_128",psf_path="/home/aidanxue/SR/kernel",transform=tf)
+    val_dataset = MyDataset(image_path="/home/aidanxue/SR/Illustris_0.5_to_1.75/evaluate",raw_image_path="/home/aidanxue/SR/Illustris_128",psf_path="/home/aidanxue/SR/kernel",transform=tf)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=5)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True)
     optim = torch.optim.Adam(ddpm.parameters(), lr=lrate)
 
     for ep in range(n_epoch):
@@ -387,14 +400,16 @@ def train_mnist():
 
         # linear lrate decay
         optim.param_groups[0]['lr'] = lrate * (1 - ep / n_epoch)
-        """
-        pbar = tqdm(dataloader)
+        
+        pbar = tqdm(train_loader)
         loss_ema = None
-        for x, c in pbar:
+        # TODO:
+        for x, x_c, c, lable in pbar:
             optim.zero_grad()
             x = x.to(device)
+            x_c = x_c.to(device)
             c = c.to(device)
-            loss = ddpm(x, c)
+            loss = ddpm(x, x_c, c)
             loss.backward()
             if loss_ema is None:
                 loss_ema = loss.item()
@@ -402,23 +417,27 @@ def train_mnist():
                 loss_ema = 0.95 * loss_ema + 0.05 * loss.item()
             pbar.set_description(f"loss: {loss_ema:.4f}")
             optim.step()
-        """
+        
         # for eval, save an image of currently generated samples (top rows)
         # followed by real images (bottom rows)
         if (ep+1) % 10 == 0:
             ddpm.eval()
             with torch.no_grad():
-                n_sample = 4 * n_conditions
+                n_sample = 2*n_conditions
                 for w_i, w in enumerate(ws_test):
-                    x_gen, x_gen_store, c_store = ddpm.sample(n_sample, (3,128,128), device, guide_w=w)
-
+                    data_iter = iter(val_loader)
+                    raw_image, cond_img, psf, sig = next(data_iter)
+                    x_gen, x_gen_store = ddpm.sample(n_sample, (3,128,128), device, x_cond=cond_img,psf=psf, guide_w=w)
+                    # TODO
                     grid = make_grid(x_gen, nrow=10)
-                    c_store = str(round(c_store,2))
-                    save_image(grid, save_dir + f"image_ep{ep}_w{w}_{c_store}.png".format())
+                    c_store = str(round(float(sig[0]), 2))
+                    save_image(grid, save_dir + f"SR_image_ep{ep}_w{w}_{c_store}.png".format())
+                    save_image(cond_img, save_dir + f"cond_img_ep{ep}_w{w}_{c_store}.png")
+                    save_image(raw_image, save_dir + f"raw_img_ep{ep}_w{w}.png")
                     print('saved image at ' + save_dir + f"image_ep{ep}_w{w}_{c_store}.png")
 
         # optionally save model
-        if save_model and ep == int(n_epoch - 1):
+        if save_model and (ep+1) % 50 == 0:
             torch.save(ddpm.state_dict(), save_dir + f"model_{ep}.pth")
             print('saved model at ' + save_dir + f"model_{ep}.pth")
 
